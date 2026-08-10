@@ -99,6 +99,21 @@ class ChatRequest(BaseModel):
 # Health & readiness
 # ─────────────────────────────────────────────────────────────
 
+@app.get("/")
+def root():
+    """Root endpoint — service info, easy to verify from browser."""
+    return {
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
+        "endpoints": {
+            "healthz": "/healthz",
+            "readyz": "/readyz",
+            "chat": "/chat (POST, requires Bearer token)",
+            "docs": "/docs",
+        },
+    }
+
+
 @app.get("/healthz")
 def healthz():
     """Liveness probe — process còn sống không?"""
