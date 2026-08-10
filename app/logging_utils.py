@@ -35,4 +35,13 @@ def emit(event: str, severity: str = "INFO", **fields) -> str:
         >>> emit("chat_completed", client_id="sv01", usd_cost=0.0001)
         '{"event": "chat_completed", "severity": "INFO", "ts": "...", ...}'
     """
-    raise NotImplementedError("TODO (CP1): cài đặt emit")
+    record = {
+        "event": event,
+        "severity": severity.upper(),
+        "ts": utc_now_iso(),
+        **fields,
+    }
+
+    text = json.dumps(record, ensure_ascii=False)
+    print(text, file=sys.stdout)
+    return text

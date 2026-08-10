@@ -39,6 +39,7 @@ SERVICE_VERSION = "1.0.0"
 # Tách ra thành hàm để test có thể thay bằng Redis giả qua
 # app.dependency_overrides, và để kết nối Redis chỉ tạo khi thật sự cần.
 # ─────────────────────────────────────────────────────────────
+
 @lru_cache(maxsize=1)
 def get_store() -> ChatStore:
     return ChatStore(get_redis_client())
@@ -56,19 +57,33 @@ def get_bucket() -> TokenBucket:
 
 @lru_cache(maxsize=1)
 def get_cost_guard() -> CostGuard:
-    return CostGuard(get_redis_client(), get_settings().daily_budget_usd)
+    return CostGuard(
+        get_redis_client(),
+        get_settings().daily_budget_usd,
+    )
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """CHO SẴN — chạy lúc app khởi động và lúc tắt."""
     shutdown_guard.arm()
-    emit("service_started", service=SERVICE_NAME, version=SERVICE_VERSION)
+    emit(
+        "service_started",
+        service=SERVICE_NAME,
+        version=SERVICE_VERSION,
+    )
     yield
-    emit("service_stopped", service=SERVICE_NAME)
+    emit(
+        "service_stopped",
+        service=SERVICE_NAME,
+    )
 
 
-app = FastAPI(title="Day 12 Chat Service", version=SERVICE_VERSION, lifespan=lifespan)
+app = FastAPI(
+    title="Day 12 Chat Service",
+    version=SERVICE_VERSION,
+    lifespan=lifespan,
+)
 
 
 class ChatRequest(BaseModel):
@@ -78,21 +93,28 @@ class ChatRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────
 # Health & readiness
 # ─────────────────────────────────────────────────────────────
+
 @app.get("/healthz")
 def healthz():
     """Liveness probe — process còn sống không?
 
-    TODO (CP1 + CP4):
-      - Đang tắt dần (``shutdown_guard.draining``) → trả
-        ``JSONResponse(status_code=503, content={"status": "draining"})``
-      - Bình thường → ``{"status": "ok", "service": SERVICE_NAME,
-        "version": SERVICE_VERSION}`` (mặc định FastAPI trả 200).
+    CP1 + CP4:
+      - Đang tắt dần → 503 {"status": "draining"}
+      - Bình thường → 200 với status, service và version.
 
-    Endpoint này phải **nhẹ**: không gọi Redis, không query DB. Nó chỉ trả
-    lời câu hỏi "có cần restart container này không?". Nếu nó phụ thuộc
-    Redis, Redis chết một nhịp là cả cụm container bị restart theo.
+    Endpoint này không gọi Redis hoặc dependency nào.
     """
-    raise NotImplementedError("TODO (CP1/CP4): cài đặt /healthz")
+    if shutdown_guard.draining:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "draining"},
+        )
+
+    return {
+        "status": "ok",
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
+    }
 
 
 @app.get("/readyz")
@@ -100,12 +122,12 @@ def readyz(store: ChatStore = Depends(get_store)):
     """Readiness probe — đã sẵn sàng nhận traffic chưa?
 
     TODO (CP4):
-      - Đang tắt dần → 503 ``{"status": "draining"}``
-      - ``store.ping()`` False → 503 ``{"status": "not ready", "redis": False}``
-      - Ngược lại → ``{"status": "ready", "redis": True}``
+      - Đang tắt dần → 503 {"status": "draining"}
+      - store.ping() False → 503 {"status": "not ready", "redis": False}
+      - Ngược lại → {"status": "ready", "redis": True}
 
-    Khác /healthz ở chỗ: endpoint này ĐƯỢC PHÉP kiểm tra dependency. Load
-    balancer dùng nó để quyết định có đẩy request vào instance này không.
+    Khác /healthz ở chỗ: endpoint này ĐƯỢC PHÉP kiểm tra dependency.
+    Load balancer dùng nó để quyết định có đẩy request vào instance này không.
     """
     raise NotImplementedError("TODO (CP4): cài đặt /readyz")
 
@@ -113,6 +135,7 @@ def readyz(store: ChatStore = Depends(get_store)):
 # ─────────────────────────────────────────────────────────────
 # Endpoint chính
 # ─────────────────────────────────────────────────────────────
+
 @app.post("/chat")
 def chat(
     payload: ChatRequest,
@@ -124,35 +147,14 @@ def chat(
     """Gửi một tin nhắn tới service.
 
     TODO (CP3 + CP4) — làm ĐÚNG THỨ TỰ sau:
-      1. ``bucket.consume(client_id)``        → 429 nếu gọi quá nhanh
-      2. ``guard.check(client_id)``           → 402 nếu hết ngân sách ngày
-      3. ``history = store.history(client_id)``
-      4. ``result = generate_reply(payload.message, history)``
-      5. ``store.add_turn(client_id, "user", payload.message)`` và
-         ``store.add_turn(client_id, "assistant", result["text"])``
-      6. ``guard.record(client_id, result["usd_cost"])``
-      7. ``emit("chat_completed", client_id=client_id,
-         prompt_tokens=result["prompt_tokens"],
-         completion_tokens=result["completion_tokens"],
-         usd_cost=result["usd_cost"])``
-      8. trả về::
-
-            {
-                "reply": result["text"],
-                "client_id": client_id,
-                "turns_before": len(history),
-                "usd_cost": result["usd_cost"],
-                "usage": {
-                    "prompt": result["prompt_tokens"],
-                    "completion": result["completion_tokens"],
-                },
-            }
-
-    Vì sao check trước rồi mới gọi LLM? Vì tiền mất ở bước gọi LLM. Chặn sau
-    khi đã gọi thì bạn vừa trả tiền vừa trả lỗi.
-
-    ``client_id`` do ``verify_bearer_token`` trả về, nên request không có
-    token hợp lệ sẽ dừng ở 401 trước khi chạm vào bất cứ dòng nào ở đây.
+      1. bucket.consume(client_id)
+      2. guard.check(client_id)
+      3. history = store.history(client_id)
+      4. result = generate_reply(payload.message, history)
+      5. store.add_turn(...) × 2
+      6. guard.record(...)
+      7. emit(...)
+      8. trả response
     """
     raise NotImplementedError("TODO (CP3/CP4): cài đặt /chat")
 
@@ -161,4 +163,8 @@ if __name__ == "__main__":
     import uvicorn
 
     settings = get_settings()
-    uvicorn.run(app, host="0.0.0.0", port=settings.port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=settings.port,
+    )
