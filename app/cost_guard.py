@@ -4,10 +4,7 @@ Rate limit giới hạn *số lượng* request. Cost guard giới hạn *số t
 client gửi đúng hạn mức request nhưng mỗi request 50k token vẫn đốt sạch
 ngân sách.
 
-Lab này chốt ngân sách theo **ngày**, không phải theo tháng. Lý do: hạn mức
-tháng chỉ báo động sau khi bạn đã mất phần lớn số tiền; hạn mức ngày giới hạn
-thiệt hại tối đa của một sự cố xuống 1/30, và sáng hôm sau service tự hồi
-phục mà không cần ai can thiệp.
+Lab này chốt ngân sách theo **ngày**, không phải theo tháng.
 """
 
 from __future__ import annotations
@@ -16,7 +13,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 
-# Giữ dữ liệu chi tiêu vài ngày để còn đối soát
+
 KEY_TTL_SECONDS = 3 * 24 * 3600
 
 
@@ -27,22 +24,22 @@ class CostGuard:
 
     @staticmethod
     def today() -> str:
-        """CHO SẴN — nhãn ngày hiện tại dạng '2026-08-01' (UTC)."""
+        """Nhãn ngày hiện tại theo UTC."""
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     @classmethod
     def _key(cls, client_id: str, day: str | None = None) -> str:
-        """CHO SẴN — khóa Redis theo từng client, từng ngày."""
+        """Khóa Redis theo từng client và từng ngày."""
         return f"spend:{client_id}:{day or cls.today()}"
 
     def spent(self, client_id: str, day: str | None = None) -> float:
-        """Số tiền client đã tiêu trong ngày.
+        """Trả về tổng chi phí đã dùng trong ngày."""
+        value = self.client.get(self._key(client_id, day))
 
-        TODO (CP3): đọc ``self.client.get(self._key(client_id, day))``.
-        Key chưa tồn tại → Redis trả None → hàm này phải trả ``0.0``.
-        Nhớ ép kiểu ``float(...)`` vì Redis trả về chuỗi.
-        """
-        raise NotImplementedError("TODO (CP3): cài đặt spent")
+        if value is None:
+            return 0.0
+
+        return float(value)
 
     def check(
         self,
@@ -50,24 +47,34 @@ class CostGuard:
         estimated_cost: float = 0.0,
         day: str | None = None,
     ) -> None:
-        """Cho qua nếu còn ngân sách, ngược lại raise 402.
+        """Kiểm tra client còn nằm trong ngân sách hay không."""
+        if self.spent(client_id, day) + estimated_cost > self.budget:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="daily budget exceeded",
+            )
 
-        TODO (CP3): nếu ``spent(client_id) + estimated_cost > self.budget``
-        → raise ``HTTPException(status_code=402, detail="daily budget exceeded")``.
-        402 = Payment Required, đúng ngữ nghĩa cho tình huống hết ngân sách.
-        """
-        raise NotImplementedError("TODO (CP3): cài đặt check")
+    def record(
+        self,
+        client_id: str,
+        cost: float,
+        day: str | None = None,
+    ) -> float:
+        """Cộng dồn chi phí vừa phát sinh."""
+        key = self._key(client_id, day)
 
-    def record(self, client_id: str, cost: float, day: str | None = None) -> float:
-        """Cộng dồn chi phí vừa phát sinh, trả về tổng mới.
+        total = self.client.incrbyfloat(key, cost)
+        self.client.expire(key, KEY_TTL_SECONDS)
 
-        TODO (CP3):
-          1. ``total = self.client.incrbyfloat(key, cost)``
-          2. ``self.client.expire(key, KEY_TTL_SECONDS)``
-          3. ``return float(total)``
-        """
-        raise NotImplementedError("TODO (CP3): cài đặt record")
+        return float(total)
 
-    def remaining(self, client_id: str, day: str | None = None) -> float:
-        """CHO SẴN — còn bao nhiêu tiền trong ngân sách hôm nay."""
-        return max(0.0, self.budget - self.spent(client_id, day))
+    def remaining(
+        self,
+        client_id: str,
+        day: str | None = None,
+    ) -> float:
+        """Trả về ngân sách còn lại."""
+        return max(
+            0.0,
+            self.budget - self.spent(client_id, day),
+        )
