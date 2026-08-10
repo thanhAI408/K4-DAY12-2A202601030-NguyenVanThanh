@@ -46,6 +46,7 @@ def get_store() -> ChatStore:
 @lru_cache(maxsize=1)
 def get_bucket() -> TokenBucket:
     settings = get_settings()
+
     return TokenBucket(
         get_redis_client(),
         capacity=settings.bucket_capacity,
@@ -88,7 +89,10 @@ app = FastAPI(
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
+    message: str = Field(
+        min_length=1,
+        max_length=2000,
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -102,7 +106,9 @@ def healthz():
     if shutdown_guard.draining:
         return JSONResponse(
             status_code=503,
-            content={"status": "draining"},
+            content={
+                "status": "draining",
+            },
         )
 
     return {
@@ -114,14 +120,32 @@ def healthz():
 
 @app.get("/readyz")
 def readyz(store: ChatStore = Depends(get_store)):
-    """Readiness probe.
+    """Readiness probe — service có sẵn sàng nhận traffic không?"""
 
-    TODO (CP4):
-      - Đang draining → 503
-      - Redis không hoạt động → 503
-      - Redis hoạt động → ready
-    """
-    raise NotImplementedError("TODO (CP4): cài đặt /readyz")
+    # Đang graceful shutdown thì không nhận traffic mới
+    if shutdown_guard.draining:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "draining",
+            },
+        )
+
+    # Redis chết hoặc không truy cập được
+    if not store.ping():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not ready",
+                "redis": False,
+            },
+        )
+
+    # Service và Redis đều sẵn sàng
+    return {
+        "status": "ready",
+        "redis": True,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
